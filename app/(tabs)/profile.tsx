@@ -43,12 +43,26 @@ export default function ProfileScreen() {
   const [isSigningOut, setIsSigningOut] = useState(false);
 
   const workoutStats = getWorkoutStats();
-  const unlockedAchievements = getUnlockedAchievements();
+  const unlockedAchievements = getUnlockedAchievements() || [];
 
   // Get current level progress using the new system
   const levelProgress = profile?.total_xp
     ? getLevelProgress(profile.total_xp)
     : { currentXP: 0, maxXP: 100, level: 1 };
+
+  // Safety check for profile data
+  if (!profile) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Profile</Text>
+        </View>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <Text style={{ color: '#FFFFFF' }}>Loading profile...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   const handleEditProfile = () => {
     router.push('/settings/profile' as any);
@@ -64,7 +78,7 @@ export default function ProfileScreen() {
 
   const handleSignOut = () => {
     if (isSigningOut) return; // Prevent multiple sign out attempts
-    
+
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -152,6 +166,8 @@ export default function ProfileScreen() {
             <LinearGradient
               colors={['#6B46C1', '#8B5CF6']}
               style={styles.profileGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
             >
               <View style={styles.profileContent}>
                 <LightningAvatar
@@ -185,6 +201,8 @@ export default function ProfileScreen() {
             <LinearGradient
               colors={['#1A1A2E', '#0F0F23']}
               style={styles.xpGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
             >
               <XPProgressBar
                 currentXP={levelProgress.currentXP}
@@ -205,6 +223,8 @@ export default function ProfileScreen() {
               <LinearGradient
                 colors={['#1A1A2E', '#0F0F23']}
                 style={styles.statGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
               >
                 <View style={styles.statIcon}>
                   <Flame size={20} color="#F59E0B" />
@@ -215,11 +235,11 @@ export default function ProfileScreen() {
                 <Text style={styles.statLabel}>Day Streak</Text>
                 <View style={styles.statExtra}>
                   {profile?.longest_streak &&
-                    profile.longest_streak > (profile?.current_streak || 0) && (
-                      <Text style={styles.bestStreak}>
-                        Best: {profile.longest_streak}
-                      </Text>
-                    )}
+                  profile.longest_streak > (profile?.current_streak || 0) ? (
+                    <Text style={styles.bestStreak}>
+                      Best: {profile.longest_streak}
+                    </Text>
+                  ) : null}
                 </View>
               </LinearGradient>
             </View>
@@ -229,6 +249,8 @@ export default function ProfileScreen() {
               <LinearGradient
                 colors={['#1A1A2E', '#0F0F23']}
                 style={styles.statGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
               >
                 <View style={styles.statIcon}>
                   <Zap size={20} color="#6B46C1" />
@@ -246,6 +268,8 @@ export default function ProfileScreen() {
               <LinearGradient
                 colors={['#1A1A2E', '#0F0F23']}
                 style={styles.statGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
               >
                 <View style={styles.statIcon}>
                   <Trophy size={20} color="#F59E0B" />
@@ -263,6 +287,8 @@ export default function ProfileScreen() {
               <LinearGradient
                 colors={['#1A1A2E', '#0F0F23']}
                 style={styles.statGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
               >
                 <View style={styles.statIcon}>
                   <Star size={20} color="#10B981" />
@@ -276,7 +302,7 @@ export default function ProfileScreen() {
         </View>
 
         {/* Achievements Section */}
-        {showAchievements && (
+        {showAchievements ? (
           <View style={styles.achievementsSection}>
             <Text style={styles.sectionTitle}>
               Achievements ({unlockedAchievements.length}/{totalAchievements})
@@ -293,7 +319,7 @@ export default function ProfileScreen() {
               ))}
             </View>
           </View>
-        )}
+        ) : null}
 
         {/* Menu Items */}
         <View style={styles.menuSection}>
@@ -307,6 +333,8 @@ export default function ProfileScreen() {
               <LinearGradient
                 colors={['#1A1A2E', '#0F0F23']}
                 style={styles.menuGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
               >
                 <View style={styles.menuLeft}>
                   <View
@@ -331,6 +359,8 @@ export default function ProfileScreen() {
             <LinearGradient
               colors={['#1A1A2E', '#0F0F23']}
               style={styles.appInfoGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
             >
               <View style={styles.appInfoContent}>
                 <View style={styles.appLogo}>

@@ -45,6 +45,7 @@ export interface ActiveWorkout {
   currentSetIndex: number;
   isResting: boolean;
   restTimeRemaining: number;
+  fatigueCalculator?: any; // FatigueCalculator instance
 }
 
 export interface CompletedWorkout {

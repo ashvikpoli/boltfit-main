@@ -17,6 +17,7 @@ import {
   Target,
   Zap,
   MessageCircle,
+  Activity,
 } from 'lucide-react-native';
 import {
   Exercise,
@@ -26,7 +27,7 @@ import {
 } from '@/types/workout';
 import { exerciseLibrary } from '@/data/exercises';
 import SetTracker from '@/components/SetTracker';
-import RestTimer from '@/components/RestTimer';
+import RestTimerModal from '@/components/RestTimerModal';
 import WorkoutSummary from '@/components/WorkoutSummary';
 import BoltChat from '@/components/BoltChat';
 import { useSupabaseWorkouts } from '@/hooks/useSupabaseWorkouts';
@@ -35,6 +36,8 @@ import {
   calculateWorkoutXP,
 } from '@/hooks/useSupabaseGamification';
 import { useAuth } from '@/hooks/useAuth';
+import { FatigueCalculator } from '@/lib/fatigue';
+import FatigueDisplay from '@/components/FatigueDisplay';
 
 // Extended Exercise interface for AI-generated workouts
 interface GeneratedExercise extends Exercise {
@@ -56,13 +59,16 @@ export default function ActiveWorkoutScreen() {
   const [currentExercise, setCurrentExercise] =
     useState<GeneratedExercise | null>(null);
   const [currentSetNumber, setCurrentSetNumber] = useState(1);
-  const [isResting, setIsResting] = useState(false);
+  const [showRestTimer, setShowRestTimer] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [completedWorkout, setCompletedWorkout] =
     useState<CompletedWorkout | null>(null);
   const [generatedWorkoutData, setGeneratedWorkoutData] = useState<any>(null); // Store original generated workout data
   const [showFullOverview, setShowFullOverview] = useState(false); // State for full overview visibility
   const [showBoltChat, setShowBoltChat] = useState(false);
+  const [fatigueCalculator, setFatigueCalculator] =
+    useState<FatigueCalculator | null>(null);
+  const [showFatigue, setShowFatigue] = useState(false);
 
   useEffect(() => {
     if (params.exerciseId) {
@@ -85,8 +91,23 @@ export default function ActiveWorkoutScreen() {
         name: ex.name,
         muscleGroup: ex.muscleGroup,
         equipment: ex.equipment,
-        description: ex.instructions,
+        description:
+          typeof ex.instructions === 'string'
+            ? ex.instructions
+            : ex.instructions?.setup?.[0] ||
+              ex.description ||
+              'Exercise description not available',
         category: 'strength' as const,
+        difficulty: ex.difficulty || 'beginner',
+        targetMuscles: ex.targetMuscles || [],
+        images: ex.images || {
+          demonstration: '',
+          thumbnail: '',
+        },
+        instructions: ex.instructions || {
+          setup: [],
+          execution: [],
+        },
         // Store the generated parameters for this exercise
         generatedSets: ex.sets,
         generatedReps: ex.reps,
@@ -96,7 +117,28 @@ export default function ActiveWorkoutScreen() {
     } else if (params.customWorkoutData) {
       // Handle custom workout
       const customWorkout = JSON.parse(params.customWorkoutData as string);
-      const exercises = customWorkout.exercises.map((ex: any) => ex.exercise);
+      const exercises = customWorkout.exercises.map((ex: any) => {
+        const exercise = ex.exercise;
+        // Ensure all required fields are present
+        return {
+          ...exercise,
+          description:
+            typeof exercise.description === 'string'
+              ? exercise.description
+              : exercise.instructions?.setup?.[0] ||
+                'Exercise description not available',
+          difficulty: exercise.difficulty || 'beginner',
+          targetMuscles: exercise.targetMuscles || [],
+          images: exercise.images || {
+            demonstration: '',
+            thumbnail: '',
+          },
+          instructions: exercise.instructions || {
+            setup: [],
+            execution: [],
+          },
+        };
+      });
       startWorkout(exercises);
     }
   }, [params.exerciseId, params.workoutData, params.customWorkoutData]);
@@ -112,6 +154,10 @@ export default function ActiveWorkoutScreen() {
       isResting: false,
       restTimeRemaining: 0,
     };
+
+    // Initialize fatigue calculator
+    const calculator = new FatigueCalculator();
+    setFatigueCalculator(calculator);
 
     setActiveWorkout(workout);
     setCurrentExercise(exercises[0]);
@@ -129,6 +175,26 @@ export default function ActiveWorkoutScreen() {
     };
 
     const updatedSets = [...activeWorkout.sets, newSet];
+
+    // Calculate fatigue for the completed set
+    if (fatigueCalculator && currentExercise) {
+      const exerciseVolume = weight * reps;
+      const exerciseDuration = 60; // Assume 60 seconds per set
+      const restTime = 0; // Will be calculated based on previous exercise time
+
+      // Calculate intensity (weight relative to a theoretical max)
+      const estimatedMax = weight * (1 + reps / 30); // Epley formula approximation
+      const intensity = Math.min(weight / estimatedMax, 1.0);
+
+      fatigueCalculator.updateFatigue({
+        exerciseIntensity: intensity,
+        exerciseVolume: exerciseVolume,
+        exerciseDuration: exerciseDuration,
+        restTime: restTime,
+        muscleGroup: currentExercise.muscleGroup,
+        exerciseDifficulty: currentExercise.difficulty,
+      });
+    }
 
     // Count completed sets for current exercise
     const completedSetsForCurrentExercise = updatedSets.filter(
@@ -149,43 +215,89 @@ export default function ActiveWorkoutScreen() {
 
     // Check if we've completed all recommended sets for this exercise
     if (completedSetsForCurrentExercise >= recommendedSets) {
-      // Auto-advance to next exercise
-      const nextIndex = currentIndex + 1;
-
-      if (nextIndex < activeWorkout.exercises.length) {
-        // Move to next exercise
-        setCurrentExercise(
-          activeWorkout.exercises[nextIndex] as GeneratedExercise
-        );
-        setCurrentSetNumber(1);
-        setIsResting(false);
-
-        // Update the current exercise index
-        setActiveWorkout((prev) =>
-          prev
-            ? {
-                ...prev,
-                currentExerciseIndex: nextIndex,
-              }
-            : null
-        );
-      } else {
-        // All exercises completed
-        finishWorkout();
-      }
+      // Show rest timer before moving to next exercise
+      setShowRestTimer(true);
     } else {
       // Start rest period for next set of same exercise
       setCurrentSetNumber(currentSetNumber + 1);
-      setIsResting(true);
+      setShowRestTimer(true);
     }
   };
 
   const skipRest = () => {
-    setIsResting(false);
+    setShowRestTimer(false);
+    // Check if we need to advance to next exercise
+    if (activeWorkout && currentExercise) {
+      const currentIndex = activeWorkout.currentExerciseIndex;
+      const completedSetsForCurrentExercise = activeWorkout.sets.filter(
+        (set) => set.exerciseId === currentExercise.id && set.completed
+      ).length;
+      const recommendedSets =
+        (currentExercise as GeneratedExercise).generatedSets || 3;
+
+      if (completedSetsForCurrentExercise >= recommendedSets) {
+        // Move to next exercise
+        const nextIndex = currentIndex + 1;
+        if (nextIndex < activeWorkout.exercises.length) {
+          const nextExercise = activeWorkout.exercises[
+            nextIndex
+          ] as GeneratedExercise;
+          setCurrentExercise(nextExercise);
+          setCurrentSetNumber(1);
+
+          // Update the current exercise index
+          setActiveWorkout((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  currentExerciseIndex: nextIndex,
+                }
+              : null
+          );
+        } else {
+          // All exercises completed
+          finishWorkout();
+        }
+      }
+    }
   };
 
   const completeRest = () => {
-    setIsResting(false);
+    setShowRestTimer(false);
+    // Check if we need to advance to next exercise
+    if (activeWorkout && currentExercise) {
+      const currentIndex = activeWorkout.currentExerciseIndex;
+      const completedSetsForCurrentExercise = activeWorkout.sets.filter(
+        (set) => set.exerciseId === currentExercise.id && set.completed
+      ).length;
+      const recommendedSets =
+        (currentExercise as GeneratedExercise).generatedSets || 3;
+
+      if (completedSetsForCurrentExercise >= recommendedSets) {
+        // Move to next exercise
+        const nextIndex = currentIndex + 1;
+        if (nextIndex < activeWorkout.exercises.length) {
+          const nextExercise = activeWorkout.exercises[
+            nextIndex
+          ] as GeneratedExercise;
+          setCurrentExercise(nextExercise);
+          setCurrentSetNumber(1);
+
+          // Update the current exercise index
+          setActiveWorkout((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  currentExerciseIndex: nextIndex,
+                }
+              : null
+          );
+        } else {
+          // All exercises completed
+          finishWorkout();
+        }
+      }
+    }
   };
 
   const finishWorkout = () => {
@@ -371,7 +483,9 @@ export default function ActiveWorkoutScreen() {
             <ArrowLeft size={24} color="#FFFFFF" />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
-            <Text style={styles.headerTitle}>Active Workout</Text>
+            <Text style={styles.headerTitle}>
+              {currentExercise?.name || 'Workout'}
+            </Text>
             <Text style={styles.headerSubtitle}>{getWorkoutDuration()}</Text>
           </View>
           <TouchableOpacity style={styles.endButton} onPress={handleEndWorkout}>
@@ -383,119 +497,120 @@ export default function ActiveWorkoutScreen() {
           style={styles.scrollView}
           showsVerticalScrollIndicator={false}
         >
-          {/* Current Exercise */}
+          {/* Video Player Section */}
           {currentExercise && (
-            <View style={styles.currentExerciseSection}>
-              <Text style={styles.sectionTitle}>Current Exercise</Text>
-              <View style={styles.exerciseCard}>
-                <LinearGradient
-                  colors={['#1A1A2E', '#0F0F23']}
-                  style={styles.exerciseGradient}
-                >
-                  {/* Exercise Image */}
-                  {currentExercise.images?.demonstration && (
-                    <View style={styles.exerciseImageContainer}>
-                      <Image
-                        source={{ uri: currentExercise.images.demonstration }}
-                        style={styles.exerciseImage}
-                        resizeMode="cover"
-                        onError={() =>
-                          console.log('Failed to load exercise image')
-                        }
-                      />
-                      {/* Difficulty indicator overlay */}
-                      {currentExercise.difficulty && (
-                        <View
-                          style={[
-                            styles.difficultyBadge,
-                            {
-                              backgroundColor:
-                                currentExercise.difficulty === 'beginner'
-                                  ? '#10B981'
-                                  : currentExercise.difficulty ===
-                                    'intermediate'
-                                  ? '#F59E0B'
-                                  : '#EF4444',
-                            },
-                          ]}
-                        >
-                          <Text style={styles.difficultyText}>
-                            {currentExercise.difficulty
-                              .charAt(0)
-                              .toUpperCase() +
-                              currentExercise.difficulty.slice(1)}
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                  )}
-
-                  <View style={styles.exerciseHeader}>
-                    <Text style={styles.exerciseName}>
-                      {currentExercise.name}
-                    </Text>
-                    <Text style={styles.exerciseDetails}>
-                      {currentExercise.muscleGroup} •{' '}
-                      {currentExercise.equipment}
-                    </Text>
-                    {/* Target muscles */}
-                    {currentExercise.targetMuscles &&
-                      currentExercise.targetMuscles.length > 0 && (
-                        <Text style={styles.targetMuscles}>
-                          Targets:{' '}
-                          {currentExercise.targetMuscles.slice(0, 2).join(', ')}
-                          {currentExercise.targetMuscles.length > 2 &&
-                            ` +${
-                              currentExercise.targetMuscles.length - 2
-                            } more`}
-                        </Text>
-                      )}
+            <View style={styles.videoSection}>
+              <View style={styles.videoContainer}>
+                {currentExercise.images?.demonstration ? (
+                  <Image
+                    source={{ uri: currentExercise.images.demonstration }}
+                    style={styles.videoImage}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={styles.videoPlaceholder}>
+                    <Text style={styles.videoPlaceholderText}>No Video</Text>
                   </View>
-                  <Text style={styles.exerciseDescription}>
-                    {currentExercise.description}
-                  </Text>
+                )}
 
-                  {/* Quick instruction hint */}
-                  {currentExercise.instructions?.setup &&
-                    currentExercise.instructions.setup.length > 0 && (
-                      <View style={styles.quickTipContainer}>
-                        <Text style={styles.quickTipLabel}>Quick Setup:</Text>
-                        <Text style={styles.quickTipText}>
-                          {currentExercise.instructions.setup[0]}
-                        </Text>
-                      </View>
-                    )}
-                </LinearGradient>
+                {/* Video Controls Overlay */}
+                <View style={styles.videoControls}>
+                  <TouchableOpacity style={styles.howToButton}>
+                    <Text style={styles.howToButtonText}>How-To</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.closeVideoButton}>
+                    <Text style={styles.closeVideoText}>×</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
-
-              {/* Set Tracker */}
-              <SetTracker
-                setNumber={currentSetNumber}
-                onCompleteSet={completeSet}
-                previousSet={getPreviousSet()}
-                exerciseType={currentExercise.category}
-                exerciseData={currentExercise}
-                generatedSets={
-                  (currentExercise as GeneratedExercise).generatedSets
-                }
-                generatedReps={
-                  (currentExercise as GeneratedExercise).generatedReps
-                }
-                generatedWeight={
-                  (currentExercise as GeneratedExercise).generatedWeight
-                }
-              />
             </View>
           )}
 
-          {/* Rest Timer */}
-          {isResting && (
-            <View style={styles.restTimerSection}>
-              <RestTimer
-                onComplete={completeRest}
-                onSkip={skipRest}
-                isActive={true}
-              />
+          {/* Action Buttons */}
+          <View style={styles.actionButtons}>
+            <TouchableOpacity style={styles.actionButton}>
+              <Clock size={16} color="#FFFFFF" />
+              <Text style={styles.actionButtonText}>1:30 Rest</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.actionButton}>
+              <Activity size={16} color="#FFFFFF" />
+              <Text style={styles.actionButtonText}>History</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.actionButton}>
+              <RotateCcw size={16} color="#FFFFFF" />
+              <Text style={styles.actionButtonText}>Replace</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.actionButton}>
+              <Text style={styles.actionButtonText}>⋯</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Sets Logging Section */}
+          {currentExercise && (
+            <View style={styles.setsSection}>
+              <Text style={styles.setsTitle}>Log Sets</Text>
+
+              {/* Generate sets based on recommended sets */}
+              {Array.from(
+                {
+                  length:
+                    (currentExercise as GeneratedExercise).generatedSets || 3,
+                },
+                (_, index) => {
+                  const setNumber = index + 1;
+                  const isCompleted =
+                    getCompletedSetsForExercise(currentExercise.id) >=
+                    setNumber;
+                  const isCurrentSet = setNumber === currentSetNumber;
+
+                  return (
+                    <View key={setNumber} style={styles.setRow}>
+                      <View style={styles.setHeader}>
+                        {isCompleted ? (
+                          <View style={styles.completedSetIndicator}>
+                            <Text style={styles.completedSetText}>✓</Text>
+                          </View>
+                        ) : (
+                          <View style={styles.setNumberIndicator}>
+                            <Text style={styles.setNumberText}>
+                              {setNumber}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+
+                      <View style={styles.setInputs}>
+                        <View style={styles.inputGroup}>
+                          <Text style={styles.inputLabel}>Reps</Text>
+                          <Text style={styles.inputValue}>
+                            {(currentExercise as GeneratedExercise)
+                              .generatedReps || 10}
+                          </Text>
+                          {setNumber === 2 && (
+                            <Text style={styles.inputSubtext}>Per Side</Text>
+                          )}
+                        </View>
+
+                        <View style={styles.inputGroup}>
+                          <Text style={styles.inputLabel}>Weight (lb)</Text>
+                          <Text style={styles.inputValue}>
+                            {(currentExercise as GeneratedExercise)
+                              .generatedWeight || 45}
+                          </Text>
+                          {setNumber === 2 && (
+                            <Text style={styles.inputSubtext}>
+                              Bar + Plates
+                            </Text>
+                          )}
+                        </View>
+                      </View>
+                    </View>
+                  );
+                }
+              )}
             </View>
           )}
 
@@ -725,19 +840,22 @@ export default function ActiveWorkoutScreen() {
             </View>
           </View>
 
-          {/* Finish Workout Button */}
-          <View style={styles.finishSection}>
+          {/* Bottom Action Buttons */}
+          <View style={styles.bottomActions}>
+            <TouchableOpacity style={styles.logAllButton}>
+              <Text style={styles.logAllButtonText}>Log All Sets</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity
-              style={styles.finishButton}
-              onPress={finishWorkout}
+              style={styles.logSetButton}
+              onPress={() =>
+                completeSet(
+                  (currentExercise as GeneratedExercise).generatedWeight || 45,
+                  (currentExercise as GeneratedExercise).generatedReps || 10
+                )
+              }
             >
-              <LinearGradient
-                colors={['#6B46C1', '#8B5CF6']}
-                style={styles.finishButtonGradient}
-              >
-                <Zap size={20} color="#FFFFFF" />
-                <Text style={styles.finishButtonText}>Finish Workout</Text>
-              </LinearGradient>
+              <Text style={styles.logSetButtonText}>Log Set</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -761,6 +879,14 @@ export default function ActiveWorkoutScreen() {
           onClose={() => setShowBoltChat(false)}
           currentWorkout={generatedWorkoutData}
           onWorkoutModified={handleWorkoutModified}
+        />
+
+        {/* Rest Timer Modal */}
+        <RestTimerModal
+          visible={showRestTimer}
+          onComplete={completeRest}
+          onSkip={skipRest}
+          onClose={() => setShowRestTimer(false)}
         />
       </LinearGradient>
     </SafeAreaView>
@@ -815,6 +941,7 @@ const styles = StyleSheet.create({
     color: '#6B46C1',
     fontWeight: '600',
   },
+
   endButton: {
     paddingHorizontal: 16,
     paddingVertical: 8,
@@ -830,280 +957,184 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 20,
   },
-  currentExerciseSection: {
+  videoSection: {
     marginTop: 20,
     marginBottom: 20,
   },
-  exerciseCard: {
-    marginBottom: 16,
-  },
-  exerciseGradient: {
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#1A1A2E',
-  },
-  exerciseHeader: {
-    marginBottom: 12,
-  },
-  exerciseName: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 8,
-  },
-  exerciseDetails: {
-    fontSize: 16,
-    color: '#6B46C1',
-    fontWeight: '500',
-    marginBottom: 8,
-  },
-  exerciseDescription: {
-    fontSize: 14,
-    color: '#94A3B8',
-    lineHeight: 20,
-  },
-  nextExercisesSection: {
-    marginBottom: 20,
-  },
-  nextExerciseCard: {
-    marginBottom: 12,
-  },
-  nextExerciseGradient: {
+  videoContainer: {
+    width: '100%',
+    height: 200,
     borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#1A1A2E',
+    overflow: 'hidden',
+    position: 'relative',
   },
-  nextExerciseHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  videoImage: {
+    width: '100%',
+    height: '100%',
   },
-  nextExerciseNumber: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#374151',
+  videoPlaceholder: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#1A1A2E',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
   },
-  nextExerciseNumberText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  nextExerciseInfo: {
-    flex: 1,
-  },
-  nextExerciseName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 4,
-  },
-  nextExerciseDetails: {
-    fontSize: 14,
+  videoPlaceholderText: {
     color: '#94A3B8',
-    marginBottom: 4,
+    fontSize: 16,
   },
-  nextExerciseMuscle: {
+  videoControls: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  howToButton: {
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  howToButtonText: {
+    color: '#FFFFFF',
     fontSize: 12,
-    color: '#64748B',
+    fontWeight: '600',
   },
-  nextExerciseStatus: {
+  closeVideoButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  nextExerciseProgress: {
-    fontSize: 14,
-    fontWeight: '700',
+  closeVideoText: {
     color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
-  completedBadge: {
-    backgroundColor: '#10B981',
-    borderRadius: 12,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
+  actionButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 24,
+    paddingHorizontal: 4,
   },
-  completedBadgeText: {
-    fontSize: 12,
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A1A2E',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    gap: 6,
+  },
+  actionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  setsSection: {
+    marginBottom: 20,
+  },
+  setsTitle: {
+    fontSize: 18,
     fontWeight: '600',
     color: '#FFFFFF',
+    marginBottom: 16,
   },
-  moreExercisesCard: {
+  setRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#1A1A2E',
     borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: '#374151',
-  },
-  moreExercisesText: {
-    fontSize: 14,
-    color: '#94A3B8',
-    fontWeight: '500',
-  },
-  workoutOverviewSection: {
-    marginBottom: 20,
-  },
-  workoutOverviewHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    padding: 16,
     marginBottom: 12,
   },
-  toggleText: {
-    fontSize: 14,
-    color: '#6B46C1',
-    fontWeight: '600',
+  setHeader: {
+    marginRight: 16,
   },
-  workoutOverviewCard: {
-    marginBottom: 16,
-  },
-  workoutOverviewGradient: {
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#1A1A2E',
-  },
-  overviewExerciseItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    marginBottom: 8,
-  },
-  currentOverviewItem: {
-    backgroundColor: '#6B46C1' + '20',
-    borderWidth: 1,
-    borderColor: '#6B46C1',
-  },
-  completedOverviewItem: {
-    backgroundColor: '#10B981' + '10',
-    opacity: 0.7,
-  },
-  overviewExerciseNumber: {
+  setNumberIndicator: {
     width: 32,
     height: 32,
     borderRadius: 16,
     backgroundColor: '#374151',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
   },
-  overviewExerciseNumberText: {
+  setNumberText: {
+    color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
-    color: '#FFFFFF',
   },
-  overviewExerciseInfo: {
-    flex: 1,
-  },
-  overviewExerciseName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 2,
-  },
-  currentOverviewText: {
-    color: '#FFFFFF',
-  },
-  completedOverviewText: {
-    color: '#94A3B8',
-  },
-  overviewExerciseDetails: {
-    fontSize: 14,
-    color: '#94A3B8',
-  },
-  currentOverviewSubtext: {
-    color: '#6B46C1',
-  },
-  completedOverviewSubtext: {
-    color: '#94A3B8',
-  },
-  overviewExerciseProgress: {
-    alignItems: 'center',
-  },
-  overviewProgressText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  currentIndicator: {
-    fontSize: 12,
-    color: '#6B46C1',
-    marginTop: 4,
-  },
-  completedCheckmark: {
-    fontSize: 16,
-    color: '#10B981',
-    marginTop: 4,
-  },
-  setTrackerSection: {
-    marginBottom: 20,
-  },
-  progressSection: {
-    marginBottom: 20,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 16,
-  },
-  progressCard: {
-    marginBottom: 16,
-  },
-  progressGradient: {
+  completedSetIndicator: {
+    width: 32,
+    height: 32,
     borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#1A1A2E',
-  },
-  progressStats: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  progressStat: {
+    backgroundColor: '#10B981',
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  progressValue: {
-    fontSize: 20,
-    fontWeight: '700',
+  completedSetText: {
     color: '#FFFFFF',
-    marginTop: 8,
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  setInputs: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  inputGroup: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  inputLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
     marginBottom: 4,
   },
-  progressLabel: {
-    fontSize: 14,
-    color: '#94A3B8',
+  inputValue: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
   },
-  finishSection: {
+  inputSubtext: {
+    color: '#64748B',
+    fontSize: 10,
+    marginTop: 2,
+  },
+  bottomActions: {
+    flexDirection: 'row',
+    gap: 12,
     marginBottom: 30,
   },
-  finishButton: {
-    marginBottom: 16,
-  },
-  finishButtonGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+  logAllButton: {
+    flex: 1,
+    backgroundColor: '#374151',
     paddingVertical: 16,
     borderRadius: 12,
+    alignItems: 'center',
   },
-  finishButtonText: {
-    fontSize: 18,
-    fontWeight: '600',
+  logAllButtonText: {
     color: '#FFFFFF',
-    marginLeft: 8,
+    fontSize: 16,
+    fontWeight: '600',
   },
-  restTimerSection: {
-    marginBottom: 20,
+  logSetButton: {
+    flex: 1,
+    backgroundColor: '#EF4444',
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
   },
+  logSetButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+
   chatButton: {
     position: 'absolute',
     bottom: 20,
@@ -1123,54 +1154,5 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  exerciseImageContainer: {
-    position: 'relative',
-    width: '100%',
-    height: 200, // Fixed height for the image container
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginBottom: 12,
-  },
-  exerciseImage: {
-    width: '100%',
-    height: '100%',
-  },
-  difficultyBadge: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-  },
-  difficultyText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  targetMuscles: {
-    fontSize: 14,
-    color: '#94A3B8',
-    marginTop: 4,
-  },
-  quickTipContainer: {
-    marginTop: 12,
-    backgroundColor: '#1A1A2E',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#374151',
-  },
-  quickTipLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#6B46C1',
-    marginBottom: 4,
-  },
-  quickTipText: {
-    fontSize: 14,
-    color: '#94A3B8',
-    lineHeight: 20,
   },
 });
